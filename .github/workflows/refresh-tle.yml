@@ -1,0 +1,50 @@
+name: Refresh TLE catalog
+
+# Keeps public/data/tle.json (the bundled satellite catalog snapshot the app
+# fetches client-side — see src/hooks/useCatalog.ts) reasonably current
+# without a database or API server: re-fetch from CelesTrak, and if the
+# snapshot actually changed, commit it. That push then triggers Vercel's
+# GitHub integration to redeploy automatically — no other wiring needed.
+on:
+  schedule:
+    # Every 3 days at 06:00 UTC. Cron's day-of-month step (*/3) can drift by
+    # a day across a month boundary — harmless for this purpose, and
+    # CelesTrak's own data only updates ~every 2h anyway (see
+    # scripts/fetch-tle.mjs), so there's no precision to protect here.
+    - cron: "0 6 */3 * *"
+  workflow_dispatch: {} # lets you trigger a refresh on demand from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-tle
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      # No `npm install` step: fetch-tle.mjs is pure Node built-ins (fetch,
+      # fs, path) with zero third-party dependencies, so there's nothing to
+      # install for this job.
+      - name: Fetch latest TLE catalog
+        run: node scripts/fetch-tle.mjs
+
+      - name: Commit and push if the catalog changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- public/data/tle.json; then
+            echo "Catalog unchanged; nothing to commit."
+            exit 0
+          fi
+          git add public/data/tle.json
+          git commit -m "Refresh TLE catalog ($(date -u +%Y-%m-%d))"
+          git push
