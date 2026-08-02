@@ -90,6 +90,29 @@ export function getScenePosition(sat: SatelliteRecord, date: Date): [number, num
   return eciToScene(pos.x, pos.y, pos.z);
 }
 
+// A ground location (unlike every satellite/the Moon) is fixed relative to
+// Earth's surface, not to the inertial ECI frame — it spins WITH Earth, once
+// per sidereal day. Going geodetic -> ECF -> ECI (the exact inverse of
+// eciToGeodetic, used elsewhere for satellites' own lat/lon) via the current
+// GMST is what correctly carries that surface point around as Earth
+// rotates, so it stays aligned with Earth.tsx's own gmst-driven mesh
+// rotation and never drifts off the visible day/night terminator or coastlines.
+export function getObserverScenePosition(
+  latDeg: number,
+  lonDeg: number,
+  altKm: number,
+  date: Date,
+): [number, number, number] {
+  const gmst = satellite.gstime(date);
+  const ecf = satellite.geodeticToEcf({
+    longitude: satellite.degreesToRadians(lonDeg),
+    latitude: satellite.degreesToRadians(latDeg),
+    height: altKm,
+  });
+  const eci = satellite.ecfToEci(ecf, gmst);
+  return eciToScene(eci.x, eci.y, eci.z);
+}
+
 // Full orbit ground path in scene space, sampled evenly across one period
 // starting at `startDate` (defaults to real now).
 export function computeOrbitPath(

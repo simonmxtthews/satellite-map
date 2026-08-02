@@ -8,6 +8,7 @@ import { Earth } from "./Earth";
 import { Moon } from "./Moon";
 import { Satellites } from "./Satellites";
 import { HoverHitboxRing } from "./HoverHitboxRing";
+import { ObserverMarker } from "./ObserverMarker";
 import { OrbitPath } from "./OrbitPath";
 import { NadirLine } from "./NadirLine";
 import { CameraRig } from "./CameraRig";
@@ -36,6 +37,7 @@ export function Scene() {
 
       <Earth />
       <Moon />
+      <ObserverMarker />
       {satellites.length > 0 && <Satellites satellites={satellites} />}
       {satellites.length > 0 && <HoverHitboxRing />}
       {selectedSat && <OrbitPath satellite={selectedSat} />}

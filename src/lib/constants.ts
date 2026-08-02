@@ -75,6 +75,12 @@ export const HIGHLIGHT_COLOR = "#ffe066";
 export const SELECTED_COLOR = "#ffffff";
 export const DIMMED_OPACITY = 0.12;
 
+// Matches the UI's ice-blue accent (see App.css's --accent) so the ground
+// marker reads as "your location" at a glance rather than blending into the
+// satellite swarm's category-color dots.
+export const OBSERVER_MARKER_COLOR = "#6fb4ff";
+export const OBSERVER_MARKER_RADIUS = 0.012;
+
 // Base satellite colors are kept at normal (<=1) intensity so the bloom pass
 // doesn't catch the whole swarm. Selected/highlighted instances are pushed
 // well above 1 (HDR) so they blow out and bloom hard against the black sky —
