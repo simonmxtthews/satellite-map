@@ -1,6 +1,5 @@
 import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Billboard } from "@react-three/drei";
 import * as THREE from "three";
 import { useAppStore } from "../store";
 import { getObserverScenePosition } from "../lib/orbits";
@@ -12,6 +11,10 @@ import { OBSERVER_MARKER_COLOR, OBSERVER_MARKER_RADIUS } from "../lib/constants"
 // cycles through — all relative to OBSERVER_MARKER_RADIUS so the whole
 // marker scales together if that constant ever changes.
 const BEACON_TIP_SCALE = 1.055;
+// Just enough lift off the literal surface to avoid z-fighting with Earth's
+// mesh — the ring is meant to read as lying flat on the ground, not
+// hovering, so this stays tiny.
+const RING_SURFACE_LIFT = 1.003;
 const RING_MIN_RADIUS = OBSERVER_MARKER_RADIUS * 1.4;
 const RING_MAX_RADIUS = OBSERVER_MARKER_RADIUS * 5;
 const PING_PERIOD_SEC = 2.2;
@@ -20,6 +23,11 @@ const markerColor = new THREE.Color(OBSERVER_MARKER_COLOR);
 const emissiveColor = markerColor.clone().multiplyScalar(2.2);
 const surfaceVec = new THREE.Vector3();
 const tipVec = new THREE.Vector3();
+const normalVec = new THREE.Vector3();
+// RingGeometry lies flat in the local XY plane (face normal +Z) — aligning
+// that +Z with the surface's outward normal (see below) is what makes the
+// ring lie flat against Earth's curvature instead of facing the camera.
+const RING_LOCAL_NORMAL = new THREE.Vector3(0, 0, 1);
 
 // A small "you are here" beacon at the observer location set in
 // ObserverLocationPanel — a ground point, not a satellite, so unlike
@@ -30,10 +38,10 @@ const tipVec = new THREE.Vector3();
 export function ObserverMarker() {
   const groupRef = useRef<THREE.Group>(null);
   const pinRef = useRef<THREE.Mesh>(null);
-  // Billboard (drei) rotates its contents in place to face the camera —
-  // the position offset has to live on this plain, unrotated wrapper
-  // instead, or the ring's world position would swing around the origin as
-  // the camera orbits instead of staying put at the beacon tip.
+  // Positioned AND oriented every frame (see useFrame) — its quaternion is
+  // set to align with the local surface normal so it lies flat against
+  // Earth's curvature at that specific point, rather than facing the
+  // camera like a typical billboarded UI ring.
   const ringAnchorRef = useRef<THREE.Group>(null);
   const ringMeshRef = useRef<THREE.Mesh>(null);
   const ringMaterialRef = useRef<THREE.MeshBasicMaterial>(null);
@@ -65,17 +73,22 @@ export function ObserverMarker() {
     tipVec.copy(surfaceVec).multiplyScalar(BEACON_TIP_SCALE);
 
     pinRef.current?.position.copy(surfaceVec);
-    ringAnchorRef.current?.position.copy(tipVec);
+
+    if (ringAnchorRef.current) {
+      ringAnchorRef.current.position.copy(surfaceVec).multiplyScalar(RING_SURFACE_LIFT);
+      normalVec.copy(surfaceVec).normalize();
+      ringAnchorRef.current.quaternion.setFromUnitVectors(RING_LOCAL_NORMAL, normalVec);
+    }
 
     const posAttr = beaconLine.geometry.getAttribute("position") as THREE.BufferAttribute;
     posAttr.setXYZ(0, surfaceVec.x, surfaceVec.y, surfaceVec.z);
     posAttr.setXYZ(1, tipVec.x, tipVec.y, tipVec.z);
     posAttr.needsUpdate = true;
 
-    // A slow, looping radar-ping: the ring expands from the beacon tip and
-    // fades out, then resets — continuous, ambient motion that helps a
-    // single small marker catch the eye among thousands of satellites
-    // without being distracting.
+    // A slow, looping radar-ping: the ring expands outward across the
+    // ground from the pin and fades out, then resets — continuous, ambient
+    // motion that helps a single small marker catch the eye among
+    // thousands of satellites without being distracting.
     const t = (state.clock.elapsedTime % PING_PERIOD_SEC) / PING_PERIOD_SEC;
     const ringRadius = RING_MIN_RADIUS + (RING_MAX_RADIUS - RING_MIN_RADIUS) * t;
     ringMeshRef.current?.scale.setScalar(ringRadius);
@@ -90,20 +103,18 @@ export function ObserverMarker() {
       </mesh>
       <primitive object={beaconLine} />
       <group ref={ringAnchorRef}>
-        <Billboard>
-          <mesh ref={ringMeshRef}>
-            <ringGeometry args={[0.72, 1, 40]} />
-            <meshBasicMaterial
-              ref={ringMaterialRef}
-              color={emissiveColor}
-              transparent
-              opacity={0.8}
-              side={THREE.DoubleSide}
-              toneMapped={false}
-              depthWrite={false}
-            />
-          </mesh>
-        </Billboard>
+        <mesh ref={ringMeshRef}>
+          <ringGeometry args={[0.72, 1, 40]} />
+          <meshBasicMaterial
+            ref={ringMaterialRef}
+            color={emissiveColor}
+            transparent
+            opacity={0.8}
+            side={THREE.DoubleSide}
+            toneMapped={false}
+            depthWrite={false}
+          />
+        </mesh>
       </group>
     </group>
   );
