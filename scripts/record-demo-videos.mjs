@@ -35,8 +35,35 @@ const GPU_ARGS = [
   "--ignore-gpu-blocklist",
 ];
 
-const DESKTOP_VIEWPORT = { width: 1280, height: 720 };
-const MOBILE_DEVICE = devices["iPhone 13"];
+const DESKTOP_VIEWPORT = { width: 1920, height: 1080 };
+// Every clip's drag choreography (including the empirically-calibrated Sun
+// reveal and Moon framing) was tuned in pixel-space against a 1280x720
+// viewport. OrbitControls' rotation amount is proportional to
+// deltaPixels/elementHeight, so scaling every drag coordinate by the same
+// height ratio reproduces IDENTICAL camera rotation at the new resolution
+// — see dragSegment() — without re-tuning (or re-discovering the Sun's
+// on-screen position) by hand.
+const REFERENCE_HEIGHT = 720;
+const DESKTOP_DRAG_SCALE = DESKTOP_VIEWPORT.height / REFERENCE_HEIGHT;
+
+// NOT devices["iPhone 13"]'s 390x664 — Playwright's video capture runs at
+// the CSS viewport's pixel size regardless of deviceScaleFactor (tried
+// requesting a larger recordVideo.size to pick up the iPhone's real 3x
+// density; it just pastes the still-390x664 frame into the corner of a
+// bigger canvas and leaves the rest blank grey, since the underlying
+// screencast never actually rendered more pixels). The only real way to
+// get more actual pixels is a wider CSS viewport — this one stays under
+// App.css's 760px mobile breakpoint (so the drawer/bottom-sheet UI still
+// applies) while using its space far more fully than a literal phone size.
+const MOBILE_VIEWPORT = { width: 700, height: 1244 };
+const MOBILE_CONTEXT_OPTIONS = {
+  viewport: MOBILE_VIEWPORT,
+  isMobile: true,
+  hasTouch: true,
+  deviceScaleFactor: 2,
+  userAgent: devices["iPhone 13"].userAgent,
+};
+
 const MAX_CLIP_SECONDS = 19.5; // stay safely under Twitter/X's 20s-ish comfort zone
 
 // ---- smooth-drag helpers -----------------------------------------------
@@ -49,6 +76,10 @@ function easeInOutCubic(t) {
 // (x+dx, y+dy) over durationMs, pointerup. OrbitControls accumulates
 // rotation from relative pointer deltas, so chaining several of these
 // (see orbit()) continues rotating the camera rather than resetting it.
+// All clip scripts below express (x,y,dx,dy) in 1280x720-reference pixels;
+// DESKTOP_DRAG_SCALE converts to the actual (1920x1080) viewport here, in
+// one place, so none of the calibrated numbers in the clip list need to
+// change.
 //
 // ~15 steps/sec, each followed by an explicit wait — dense enough to read
 // as a smooth pan, coarse enough that per-call CDP round-trip overhead
@@ -59,6 +90,10 @@ function easeInOutCubic(t) {
 // trusting this number, so the overshoot just costs a little extra
 // recording time, not correctness.
 async function dragSegment(page, x, y, dx, dy, durationMs) {
+  x *= DESKTOP_DRAG_SCALE;
+  y *= DESKTOP_DRAG_SCALE;
+  dx *= DESKTOP_DRAG_SCALE;
+  dy *= DESKTOP_DRAG_SCALE;
   const steps = Math.max(6, Math.round(durationMs / 65));
   const perStepWait = durationMs / steps;
   await page.mouse.move(x, y);
@@ -94,7 +129,7 @@ async function loadApp(page) {
 async function recordClip(browser, { name, viewport, isMobile = false, run }) {
   console.log(`\n=== Recording: ${name} ===`);
   const contextOptions = isMobile
-    ? { ...MOBILE_DEVICE, recordVideo: { dir: RAW_DIR, size: MOBILE_DEVICE.viewport } }
+    ? { ...MOBILE_CONTEXT_OPTIONS, recordVideo: { dir: RAW_DIR, size: MOBILE_VIEWPORT } }
     : { viewport, recordVideo: { dir: RAW_DIR, size: viewport } };
 
   const t0 = Date.now();
