@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 .vercel
 .env*
+
+# Marketing/demo video captures — local-only, never pushed.
+demo-videos/
