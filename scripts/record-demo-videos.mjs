@@ -2,29 +2,37 @@
 // Records short marketing demo clips of the live app for Twitter/X launch
 // posts. Output goes to demo-videos/ (gitignored — never committed).
 //
-// Each clip's run(page) function calls markContentStart() once the initial
-// page-load busywork is done and the "real" demo action is about to begin.
-// The raw Playwright recording (which necessarily includes however long
-// navigation/networkidle/settle actually took — highly variable, and
-// dominated by CDP round-trip overhead during scripted mouse movement, not
-// just network time) is then trimmed to start exactly there, with the
-// final duration measured from real elapsed wall-clock time rather than a
-// guessed constant — see recordClip(). Guessing a fixed trim point badly
-// undershot in practice (CDP per-call overhead during dense mouse-move
-// sequences inflated real time well past the naive `steps * intervalMs`
-// estimate), which is what this measurement approach avoids.
+// This does NOT use Playwright's built-in context.recordVideo. That API
+// captures frames via Chromium's CDP screencast (Page.startScreencast) —
+// built for lightweight devtools thumbnail streaming, not recording, and it
+// visibly JPEG-compresses/softens every frame before Playwright's own
+// ffmpeg step ever runs. Diff-testing a screencast video frame against a
+// direct page.screenshot() of the exact same instant (same 1920x1080
+// resolution) showed clearly visible extra blur and color fringing in the
+// screencast version — no amount of high-quality re-encoding downstream
+// fixes that, since the detail is already gone before it reaches ffmpeg.
+//
+// Instead: capture a sequence of full-fidelity JPEG screenshots directly
+// (quality 95 — fast enough for ~28-30fps, see dragSegment's sibling
+// capture loop below) while the clip's choreography runs, each stamped
+// with its real capture time, then assemble them into an MP4 via ffmpeg's
+// concat demuxer using those real per-frame durations. That last part
+// matters: capture timing isn't perfectly uniform (CDP round-trip jitter),
+// and encoding "each frame lasted its ACTUAL measured duration" is what
+// keeps playback speed correct despite that jitter, rather than assuming a
+// fixed rate and letting timing drift accumulate over the clip.
 
 import { chromium, devices } from "playwright";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, rename } from "node:fs/promises";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
-const RAW_DIR = path.join(ROOT, "demo-videos", "raw");
+const FRAMES_DIR = path.join(ROOT, "demo-videos", "frames");
 const FINAL_DIR = path.join(ROOT, "demo-videos", "final");
 
 const SITE_URL = "https://satellite-sky.vercel.app/";
@@ -46,15 +54,13 @@ const DESKTOP_VIEWPORT = { width: 1920, height: 1080 };
 const REFERENCE_HEIGHT = 720;
 const DESKTOP_DRAG_SCALE = DESKTOP_VIEWPORT.height / REFERENCE_HEIGHT;
 
-// NOT devices["iPhone 13"]'s 390x664 — Playwright's video capture runs at
-// the CSS viewport's pixel size regardless of deviceScaleFactor (tried
-// requesting a larger recordVideo.size to pick up the iPhone's real 3x
-// density; it just pastes the still-390x664 frame into the corner of a
-// bigger canvas and leaves the rest blank grey, since the underlying
-// screencast never actually rendered more pixels). The only real way to
-// get more actual pixels is a wider CSS viewport — this one stays under
-// App.css's 760px mobile breakpoint (so the drawer/bottom-sheet UI still
-// applies) while using its space far more fully than a literal phone size.
+// A wider-than-literal-phone viewport (still under App.css's 760px mobile
+// breakpoint, so the drawer/bottom-sheet UI still applies) — chosen after
+// an earlier attempt to request a larger recordVideo.size on the real
+// iPhone-13 dimensions just padded the frame with blank grey instead of
+// adding real pixels, since recordVideo never rendered more than the CSS
+// viewport in the first place. Moot now that recordVideo is gone entirely,
+// but the wider viewport is still worth keeping for a less cramped shot.
 const MOBILE_VIEWPORT = { width: 700, height: 1244 };
 const MOBILE_CONTEXT_OPTIONS = {
   viewport: MOBILE_VIEWPORT,
@@ -65,6 +71,7 @@ const MOBILE_CONTEXT_OPTIONS = {
 };
 
 const MAX_CLIP_SECONDS = 19.5; // stay safely under Twitter/X's 20s-ish comfort zone
+const CAPTURE_JPEG_QUALITY = 95;
 
 // ---- smooth-drag helpers -----------------------------------------------
 
@@ -83,12 +90,10 @@ function easeInOutCubic(t) {
 //
 // ~15 steps/sec, each followed by an explicit wait — dense enough to read
 // as a smooth pan, coarse enough that per-call CDP round-trip overhead
-// (measured ~14ms/call; irreducible, not something a shorter wait avoids)
 // doesn't dominate and silently compress the gesture into a fast whip. The
-// real elapsed time will still overshoot durationMs somewhat because of
-// that overhead — recordClip() measures actual wall-clock time rather than
-// trusting this number, so the overshoot just costs a little extra
-// recording time, not correctness.
+// independent frame-capture loop (see startCapture) samples whatever's on
+// screen throughout this in real time, so it doesn't need to know or care
+// about this function's internal step count.
 async function dragSegment(page, x, y, dx, dy, durationMs) {
   x *= DESKTOP_DRAG_SCALE;
   y *= DESKTOP_DRAG_SCALE;
@@ -124,52 +129,77 @@ async function loadApp(page) {
   await page.waitForTimeout(1200);
 }
 
-// ---- recording plumbing -------------------------------------------------
+// ---- frame-capture plumbing ---------------------------------------------
 
-async function recordClip(browser, { name, viewport, isMobile = false, run }) {
-  console.log(`\n=== Recording: ${name} ===`);
-  const contextOptions = isMobile
-    ? { ...MOBILE_CONTEXT_OPTIONS, recordVideo: { dir: RAW_DIR, size: MOBILE_VIEWPORT } }
-    : { viewport, recordVideo: { dir: RAW_DIR, size: viewport } };
+// Runs a tight screenshot loop until stopped, recording each frame's real
+// elapsed time (not an assumed fixed interval) so assembleVideo() can
+// reproduce correct real-time pacing regardless of capture jitter.
+function makeCapturer(page, frameDir) {
+  let capturing = false;
+  let frameIdx = 0;
+  const timestampsMs = [];
+  let loopPromise = null;
+  let t0 = 0;
 
-  const t0 = Date.now();
-  let contentStartSec = 0;
-  const markContentStart = () => {
-    contentStartSec = (Date.now() - t0) / 1000;
-  };
-
-  const context = await browser.newContext(contextOptions);
-  const page = await context.newPage();
-  page.on("pageerror", (e) => console.error(`  [pageerror] ${e.message}`));
-
-  try {
-    await run(page, markContentStart);
-  } finally {
-    await context.close();
+  function start() {
+    t0 = Date.now();
+    capturing = true;
+    loopPromise = (async () => {
+      while (capturing) {
+        const buf = await page.screenshot({ type: "jpeg", quality: CAPTURE_JPEG_QUALITY });
+        const t = Date.now() - t0;
+        const file = path.join(frameDir, `f_${String(frameIdx).padStart(6, "0")}.jpg`);
+        await writeFile(file, buf);
+        timestampsMs.push(t);
+        frameIdx++;
+        if (t / 1000 > MAX_CLIP_SECONDS + 2) capturing = false; // safety valve
+      }
+    })();
   }
-  const totalSec = (Date.now() - t0) / 1000;
 
-  const video = await page.video().path();
-  const dest = path.join(RAW_DIR, `${name}.webm`);
-  await rename(video, dest);
+  async function stop() {
+    capturing = false;
+    await loopPromise;
+    return timestampsMs;
+  }
 
-  const duration = Math.min(MAX_CLIP_SECONDS, Math.max(1, totalSec - contentStartSec - 0.3));
-  console.log(
-    `  raw total=${totalSec.toFixed(1)}s contentStart=${contentStartSec.toFixed(1)}s -> trim [${contentStartSec.toFixed(1)}s, +${duration.toFixed(1)}s]`,
-  );
-  return { rawPath: dest, trimStart: contentStartSec, duration };
+  return { start, stop };
 }
 
-async function trimAndConvert(rawPath, name, { trimStart, duration }) {
+// Builds an ffmpeg concat-demuxer input list with each frame's REAL
+// measured duration (not a fixed 1/fps), then encodes to H.264 MP4,
+// resampling to a clean 30fps CFR for final delivery. Frames beyond
+// MAX_CLIP_SECONDS are dropped rather than included and then cut, since we
+// control capture directly and don't need to "trim" anything after the
+// fact the way the old recordVideo-based pipeline did.
+async function assembleVideo(frameDir, timestampsMs, name) {
+  const cutoffMs = MAX_CLIP_SECONDS * 1000;
+  const kept = timestampsMs.filter((t) => t <= cutoffMs);
+  if (kept.length < 2) throw new Error(`${name}: not enough frames captured (${kept.length})`);
+
+  const listPath = path.join(frameDir, "concat.txt");
+  const lines = [];
+  for (let i = 0; i < kept.length; i++) {
+    const file = `f_${String(i).padStart(6, "0")}.jpg`;
+    lines.push(`file '${file}'`);
+    const durationSec =
+      i < kept.length - 1 ? (kept[i + 1] - kept[i]) / 1000 : (kept[i] - kept[i - 1]) / 1000;
+    lines.push(`duration ${durationSec.toFixed(4)}`);
+  }
+  // ffmpeg's concat demuxer ignores the last "duration" line unless the
+  // final file is also repeated without one — standard documented quirk.
+  lines.push(`file 'f_${String(kept.length - 1).padStart(6, "0")}.jpg'`);
+  await writeFile(listPath, lines.join("\n"));
+
   const outPath = path.join(FINAL_DIR, `${name}.mp4`);
   const args = [
     "-y",
-    "-ss",
-    String(trimStart),
+    "-f",
+    "concat",
+    "-safe",
+    "0",
     "-i",
-    rawPath,
-    "-t",
-    String(duration),
+    listPath,
     "-vf",
     "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30",
     "-c:v",
@@ -179,15 +209,41 @@ async function trimAndConvert(rawPath, name, { trimStart, duration }) {
     "-preset",
     "slow",
     "-crf",
-    "18",
+    "16",
     "-movflags",
     "+faststart",
     "-an",
     outPath,
   ];
   await execFileAsync("ffmpeg", args);
-  console.log(`  saved -> ${outPath}`);
+  const totalSec = kept[kept.length - 1] / 1000;
+  console.log(`  ${kept.length} frames, ${totalSec.toFixed(1)}s -> ${outPath}`);
   return outPath;
+}
+
+// ---- recording plumbing -------------------------------------------------
+
+async function recordClip(browser, { name, viewport, isMobile = false, run }) {
+  console.log(`\n=== Recording: ${name} ===`);
+  const contextOptions = isMobile ? MOBILE_CONTEXT_OPTIONS : { viewport };
+
+  const context = await browser.newContext(contextOptions);
+  const page = await context.newPage();
+  page.on("pageerror", (e) => console.error(`  [pageerror] ${e.message}`));
+
+  const frameDir = path.join(FRAMES_DIR, name);
+  await rm(frameDir, { recursive: true, force: true });
+  await mkdir(frameDir, { recursive: true });
+  const capturer = makeCapturer(page, frameDir);
+
+  try {
+    await run(page, capturer.start);
+  } finally {
+    const timestampsMs = await capturer.stop();
+    await context.close();
+    await assembleVideo(frameDir, timestampsMs, name);
+    await rm(frameDir, { recursive: true, force: true });
+  }
 }
 
 // ---- clip scripts ---------------------------------------------------------
@@ -196,9 +252,9 @@ const clips = [
   {
     name: "01-overview",
     viewport: DESKTOP_VIEWPORT,
-    async run(page, markContentStart) {
+    async run(page, startCapture) {
       await loadApp(page);
-      markContentStart();
+      startCapture();
       await orbit(page, 760, 400, [
         { dx: -180, dy: 30, duration: 2600 },
         { dx: -160, dy: -20, duration: 2400 },
@@ -213,9 +269,9 @@ const clips = [
   {
     name: "02-search-and-select",
     viewport: DESKTOP_VIEWPORT,
-    async run(page, markContentStart) {
+    async run(page, startCapture) {
       await loadApp(page);
-      markContentStart();
+      startCapture();
       await typeSlowly(page, ".search-input", "ZARYA");
       await page.waitForTimeout(700);
       await page.locator(".search-results li").first().click();
@@ -232,9 +288,9 @@ const clips = [
   {
     name: "03-time-playback",
     viewport: DESKTOP_VIEWPORT,
-    async run(page, markContentStart) {
+    async run(page, startCapture) {
       await loadApp(page);
-      markContentStart();
+      startCapture();
       await page.locator(".playback-btn").click();
       await page.waitForTimeout(2200);
       await page.locator(".speed-presets button", { hasText: "5m/s" }).click();
@@ -251,9 +307,9 @@ const clips = [
   {
     name: "04-category-highlight",
     viewport: DESKTOP_VIEWPORT,
-    async run(page, markContentStart) {
+    async run(page, startCapture) {
       await loadApp(page);
-      markContentStart();
+      startCapture();
       await page.locator(".category-chip", { hasText: "Starlink" }).click();
       await page.waitForTimeout(600);
       await orbit(page, 760, 400, [
@@ -269,9 +325,9 @@ const clips = [
   {
     name: "05-location-and-passes",
     viewport: DESKTOP_VIEWPORT,
-    async run(page, markContentStart) {
+    async run(page, startCapture) {
       await loadApp(page);
-      markContentStart();
+      startCapture();
       // Rio de Janeiro — visible in the default camera framing without any
       // orbit, and (checked against the live pass predictor shortly before
       // recording) has several real upcoming visible ISS passes right now,
@@ -292,9 +348,9 @@ const clips = [
   {
     name: "06-moon",
     viewport: DESKTOP_VIEWPORT,
-    async run(page, markContentStart) {
+    async run(page, startCapture) {
       await loadApp(page);
-      markContentStart();
+      startCapture();
       await typeSlowly(page, ".search-input", "Moon");
       await page.waitForTimeout(600);
       await page.locator(".search-results li").first().click();
@@ -310,16 +366,16 @@ const clips = [
   {
     name: "07-sun",
     viewport: DESKTOP_VIEWPORT,
-    async run(page, markContentStart) {
+    async run(page, startCapture) {
       await loadApp(page);
-      markContentStart();
+      startCapture();
       // A slow, continuous orbit whose net rotation brings the real Sun
       // (positioned at its true current ecliptic direction — see
       // src/lib/sun.ts) into frame. This exact net delta (-1760, -240 px
-      // at this viewport/anchor) was calibrated empirically shortly before
-      // recording — the Sun's real position barely drifts hour to hour, so
-      // it holds, but re-check with a quick screenshot probe if this ever
-      // stops landing the Sun in frame.
+      // at the 1280x720 reference) was calibrated empirically shortly
+      // before recording — the Sun's real position barely drifts hour to
+      // hour, so it holds, but re-check with a quick screenshot probe if
+      // this ever stops landing the Sun in frame.
       await orbit(page, 760, 400, [
         { dx: -300, dy: -40, duration: 1400 },
         { dx: -300, dy: -40, duration: 1400 },
@@ -336,9 +392,9 @@ const clips = [
   {
     name: "08-mobile",
     isMobile: true,
-    async run(page, markContentStart) {
+    async run(page, startCapture) {
       await loadApp(page);
-      markContentStart();
+      startCapture();
       await page.locator(".mobile-menu-toggle").click();
       await page.waitForTimeout(900);
       await typeSlowly(page, ".search-input", "ZARYA");
@@ -359,14 +415,13 @@ async function main() {
     process.exit(1);
   }
 
-  await mkdir(RAW_DIR, { recursive: true });
+  await mkdir(FRAMES_DIR, { recursive: true });
   await mkdir(FINAL_DIR, { recursive: true });
 
   const browser = await chromium.launch({ args: GPU_ARGS });
   try {
     for (const clip of toRun) {
-      const { rawPath, trimStart, duration } = await recordClip(browser, clip);
-      await trimAndConvert(rawPath, clip.name, { trimStart, duration });
+      await recordClip(browser, clip);
     }
   } finally {
     await browser.close();
