@@ -1,0 +1,232 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1200px;
+        height: 630px;
+        overflow: hidden;
+        background: #05070c;
+        font-family: "Inter", -apple-system, sans-serif;
+      }
+      .card {
+        position: relative;
+        width: 1200px;
+        height: 630px;
+      }
+      .bg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: 58% 42%;
+        filter: saturate(1.08) contrast(1.03);
+      }
+      /* Darken overall so white text/UI chrome from the capture doesn't
+         compete with the overlay, then build a stronger pool of contrast
+         in the lower-left where the title sits. */
+      .shade {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(120% 90% at 68% 38%, rgba(5, 7, 12, 0) 0%, rgba(5, 7, 12, 0.35) 60%, rgba(5, 7, 12, 0.72) 100%);
+      }
+      .scrim {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          115deg,
+          rgba(4, 6, 10, 0.96) 0%,
+          rgba(4, 6, 10, 0.88) 22%,
+          rgba(4, 6, 10, 0.42) 44%,
+          rgba(4, 6, 10, 0) 62%
+        );
+      }
+      .vignette {
+        position: absolute;
+        inset: 0;
+        box-shadow: inset 0 0 160px 40px rgba(0, 0, 0, 0.55);
+      }
+      .grain {
+        position: absolute;
+        inset: 0;
+        opacity: 0.035;
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+      }
+
+      .content {
+        position: absolute;
+        left: 72px;
+        top: 0;
+        bottom: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        width: 640px;
+      }
+
+      .kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        width: fit-content;
+        padding: 7px 14px 7px 11px;
+        border-radius: 999px;
+        background: rgba(111, 180, 255, 0.1);
+        border: 1px solid rgba(111, 180, 255, 0.28);
+        margin-bottom: 26px;
+      }
+      .kicker-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: #7ee0a8;
+        box-shadow: 0 0 8px 1px rgba(126, 224, 168, 0.8);
+      }
+      .kicker span {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: #bcd7ff;
+      }
+
+      h1 {
+        font-size: 76px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        line-height: 1.03;
+        color: #f3f6fb;
+        text-shadow: 0 2px 30px rgba(0, 0, 0, 0.5);
+      }
+      h1 .accent {
+        background: linear-gradient(92deg, #9cc9ff 0%, #6fb4ff 55%, #4f8ee0 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+
+      p.sub {
+        margin-top: 22px;
+        max-width: 520px;
+        font-size: 21px;
+        line-height: 1.5;
+        font-weight: 500;
+        color: #b7c0cf;
+      }
+
+      .stats {
+        display: flex;
+        gap: 34px;
+        margin-top: 40px;
+      }
+      .stat {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .stat .num {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 24px;
+        font-weight: 700;
+        color: #eef1f6;
+      }
+      .stat .num.accent-text {
+        color: #7ee0a8;
+      }
+      .stat .label {
+        font-size: 13px;
+        font-weight: 500;
+        color: #7c8494;
+        letter-spacing: 0.01em;
+      }
+      .stat-divider {
+        width: 1px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+
+      .brand {
+        position: absolute;
+        right: 56px;
+        bottom: 40px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        opacity: 0.9;
+      }
+      .brand svg {
+        width: 22px;
+        height: 22px;
+      }
+      .brand span {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 14px;
+        font-weight: 600;
+        color: #cfd6e2;
+        letter-spacing: 0.02em;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <img class="bg" src="data:image/png;base64,__BACKGROUND_BASE64__" />
+      <div class="shade"></div>
+      <div class="scrim"></div>
+      <div class="vignette"></div>
+      <div class="grain"></div>
+
+      <div class="content">
+        <div class="kicker">
+          <span class="kicker-dot"></span>
+          <span>LIVE ORBITAL TRACKING</span>
+        </div>
+
+        <h1>Satellite<br /><span class="accent">Map</span></h1>
+
+        <p class="sub">
+          Every active satellite in orbit, rendered in real time on a 3D
+          globe &mdash; true-scale SGP4 propagation powered by live TLE data.
+        </p>
+
+        <div class="stats">
+          <div class="stat">
+            <span class="num accent-text">16,000+</span>
+            <span class="label">satellites tracked</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
+            <span class="num">2x</span>
+            <span class="label">position updates / sec</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
+            <span class="num">SGP4</span>
+            <span class="label">real orbital mechanics</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="brand">
+        <svg viewBox="0 0 800 800" xmlns="http://www.w3.org/2000/svg" fill="#eef1f6">
+          <path d="M500,669.23c-93.31,0-169.23-75.92-169.23-169.23S406.69,330.77,500,330.77,669.23,406.69,669.23,500,593.31,669.23,500,669.23Zm0-307.69c-76.35,0-138.46,62.11-138.46,138.46S423.65,638.46,500,638.46,638.46,576.35,638.46,500,576.35,361.54,500,361.54Z" transform="translate(-100 -100)"/>
+          <path d="M500,746.15c-105.48,0-204.88-24.78-279.88-69.78C142.66,629.89,100,567.26,100,500s42.66-129.89,120.12-176.37c75-45,174.4-69.78,279.88-69.78s204.88,24.78,279.88,69.78C857.34,370.11,900,432.74,900,500S857.34,629.89,779.88,676.37C704.88,721.37,605.48,746.15,500,746.15Zm0-461.53c-100,0-193.76,23.22-264,65.39-67.83,40.7-105.18,94-105.18,150S168.12,609.29,236,650C306.24,692.16,400,715.38,500,715.38s193.76-23.22,264-65.4c67.83-40.69,105.18-94,105.18-150S831.88,390.71,764.05,350C693.76,307.84,600,284.62,500,284.62Z" transform="translate(-100 -100)"/>
+          <path d="M500,900c-67.26,0-129.89-42.66-176.37-120.12-45-75-69.78-174.4-69.78-279.88s24.78-204.88,69.78-279.88C370.11,142.66,432.74,100,500,100s129.89,42.66,176.37,120.12c45,75,69.78,174.4,69.78,279.88s-24.78,204.88-69.78,279.88C629.89,857.34,567.26,900,500,900Zm0-769.23c-56,0-109.29,37.35-150,105.18C307.84,306.24,284.62,400,284.62,500s23.22,193.76,65.39,264c40.7,67.83,94,105.18,150,105.18s109.29-37.35,150-105.18c42.18-70.29,65.4-164.07,65.4-264S692.16,306.24,650,236C609.29,168.12,556,130.77,500,130.77Z" transform="translate(-100 -100)"/>
+        </svg>
+        <span>satellite-sky.vercel.app</span>
+      </div>
+    </div>
+  </body>
+</html>
